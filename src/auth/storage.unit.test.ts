@@ -12,17 +12,21 @@ import { SecretStorageFake } from '../test/helpers/secret-storage';
 import { AuthStorage, RefreshableAuthenticationSession } from './storage';
 
 const SESSIONS_KEY = `${PROVIDER_ID}.sessions`;
-const DEFAULT_SESSION: RefreshableAuthenticationSession = {
+const SESSION_1: RefreshableAuthenticationSession = {
   id: '1',
   refreshToken: '//42',
   account: { id: 'foo', label: 'bar' },
   scopes: ['baz'],
 };
+const SESSION_2: RefreshableAuthenticationSession = {
+  id: '2',
+  refreshToken: '\\43',
+  account: { id: 'qux', label: 'quux' },
+  scopes: ['corgi'],
+};
 
-describe('ServerStorage', () => {
-  let secretsStub: SinonStubbedInstance<
-    Pick<SecretStorage, 'get' | 'store' | 'delete'>
-  >;
+describe('AuthStorage', () => {
+  let secretsStub: SinonStubbedInstance<SecretStorageFake>;
   let authStorage: AuthStorage;
 
   beforeEach(() => {
@@ -37,100 +41,155 @@ describe('ServerStorage', () => {
   });
 
   describe('getSessions', () => {
-    it('returns no sessions when none are stored', async () => {
-      await expect(authStorage.getSession()).to.eventually.equal(undefined);
+    it('returns an empty array when nothing is stored', async () => {
+      secretsStub.get.resolves(undefined);
 
+      const sessions = await authStorage.getSessions();
+
+      expect(sessions).to.deep.equal([]);
       sinon.assert.calledOnceWithExactly(secretsStub.get, SESSIONS_KEY);
     });
 
-    it('returns a single session when one is stored', async () => {
-      await authStorage.storeSession(DEFAULT_SESSION);
+    it('returns an empty array when storage is corrupted', async () => {
+      secretsStub.get.resolves('invalid-json-{[}');
 
-      await expect(authStorage.getSession()).to.eventually.deep.equal(
-        DEFAULT_SESSION,
-      );
+      await expect(authStorage.getSessions()).to.be.rejected;
+    });
 
+    it('returns an empty array if schema validation fails', async () => {
+      secretsStub.get.resolves(JSON.stringify([{ id: 'missing-fields' }]));
+
+      await expect(authStorage.getSessions()).to.be.rejected;
+    });
+
+    it('returns a stored session', async () => {
+      secretsStub.get.resolves(JSON.stringify([SESSION_1]));
+
+      const sessions = await authStorage.getSessions();
+
+      expect(sessions).to.deep.equal([SESSION_1]);
       sinon.assert.calledOnceWithExactly(secretsStub.get, SESSIONS_KEY);
     });
 
-    it('throws an error when the stored sessions do not conform to the expected schema', async () => {
-      secretsStub.store(
-        SESSIONS_KEY,
-        JSON.stringify([
-          { ...DEFAULT_SESSION, account: "shouldn't be a string" },
-        ]),
+    it('returns stored sessions', async () => {
+      secretsStub.get.resolves(JSON.stringify([SESSION_1, SESSION_2]));
+
+      const sessions = await authStorage.getSessions();
+
+      expect(sessions).to.deep.equal([SESSION_1, SESSION_2]);
+      sinon.assert.calledOnceWithExactly(secretsStub.get, SESSIONS_KEY);
+    });
+  });
+
+  describe('getSession', () => {
+    it('finds a session that satisfies requested scopes', async () => {
+      secretsStub.get.resolves(JSON.stringify([SESSION_1, SESSION_2]));
+
+      const found = await authStorage.getSession(['corgi']);
+
+      expect(found?.id).to.equal(SESSION_2.id);
+    });
+
+    it('does not find a session that has more scopes than requested', async () => {
+      const sessionWithMoreScopes = {
+        ...SESSION_2,
+        scopes: [...SESSION_2.scopes, 'another-scope'],
+      };
+      secretsStub.get.resolves(
+        JSON.stringify([SESSION_1, sessionWithMoreScopes]),
       );
 
-      await expect(authStorage.getSession()).to.eventually.be.rejectedWith(
-        /received string/,
+      const found = await authStorage.getSession(SESSION_2.scopes);
+
+      expect(found).to.equal(undefined);
+    });
+
+    it('returns undefined if no session satisfies all scopes', async () => {
+      secretsStub.get.resolves(JSON.stringify([SESSION_1]));
+
+      const found = await authStorage.getSession(['non-existent-scope']);
+
+      expect(found).to.be.undefined;
+    });
+
+    it('returns the first session if two sessions have the same scopes', async () => {
+      secretsStub.get.resolves(
+        JSON.stringify([SESSION_1, { ...SESSION_1, id: SESSION_2.id }]),
       );
+
+      const found = await authStorage.getSession(SESSION_1.scopes);
+
+      expect(found).to.deep.equal(SESSION_1);
     });
   });
 
   describe('storeSession', () => {
-    it('stores the provided session', async () => {
-      await authStorage.storeSession(DEFAULT_SESSION);
+    it('stores a session when no stored sessions exist', async () => {
+      await authStorage.storeSession(SESSION_1);
 
-      await expect(authStorage.getSession()).to.eventually.deep.equal(
-        DEFAULT_SESSION,
-      );
-      sinon.assert.calledOnceWithExactly(
+      const sessions = await authStorage.getSessions();
+      expect(sessions.length).to.equal(1);
+
+      expect(sessions[0].id).to.equal(SESSION_1.id);
+      sinon.assert.calledWith(
         secretsStub.store,
         SESSIONS_KEY,
-        JSON.stringify([DEFAULT_SESSION]),
+        JSON.stringify([SESSION_1]),
       );
     });
 
-    it('overrides the existing stored session', async () => {
-      const newSession = { ...DEFAULT_SESSION, id: '2' };
-      await authStorage.storeSession(DEFAULT_SESSION);
+    it('stores a session when no sessions with the same ID exist', async () => {
+      await authStorage.storeSession(SESSION_1);
+      await authStorage.storeSession(SESSION_2);
 
-      await authStorage.storeSession(newSession);
+      const sessions = await authStorage.getSessions();
+      expect(sessions.length).to.equal(2);
 
-      await expect(authStorage.getSession()).to.eventually.deep.equal(
-        newSession,
-      );
-      sinon.assert.calledTwice(secretsStub.store);
-      sinon.assert.calledWith(
-        secretsStub.store.firstCall,
-        SESSIONS_KEY,
-        JSON.stringify([DEFAULT_SESSION]),
-      );
-      sinon.assert.calledWith(
-        secretsStub.store.secondCall,
-        SESSIONS_KEY,
-        JSON.stringify([newSession]),
-      );
+      const lastCall = secretsStub.store.lastCall;
+      expect(lastCall.args[1]).to.contain(SESSION_1.id);
+      expect(lastCall.args[1]).to.contain(SESSION_2.id);
+    });
+
+    it('updates an existing session if the ID matches', async () => {
+      await authStorage.storeSession(SESSION_1);
+      const updatedSession = { ...SESSION_1, refreshToken: 'new-token' };
+
+      await authStorage.storeSession(updatedSession);
+
+      const sessions = await authStorage.getSessions();
+      expect(sessions.length).to.equal(1);
+      expect(sessions[0].refreshToken).to.equal('new-token');
     });
   });
 
   describe('removeSession', () => {
-    it('returns undefined when no sessions exist', async () => {
-      await expect(
-        authStorage.removeSession(DEFAULT_SESSION.id),
-      ).to.eventually.equal(undefined);
+    it('returns undefined if session does not exist', async () => {
+      const result = await authStorage.removeSession('non-existent');
 
+      expect(result).to.be.undefined;
       sinon.assert.notCalled(secretsStub.delete);
     });
 
-    it('returns undefined when the session does not exist', async () => {
-      await authStorage.storeSession(DEFAULT_SESSION);
+    it('deletes the storage key entirely when the last session is removed', async () => {
+      secretsStub.get.resolves(JSON.stringify([SESSION_1]));
 
-      await expect(
-        authStorage.removeSession('does not exist'),
-      ).to.eventually.equal(undefined);
+      const removed = await authStorage.removeSession(SESSION_1.id);
 
-      sinon.assert.notCalled(secretsStub.delete);
-    });
-
-    it('returns the session when it is the only one and is removed', async () => {
-      await authStorage.storeSession(DEFAULT_SESSION);
-
-      await expect(
-        authStorage.removeSession(DEFAULT_SESSION.id),
-      ).to.eventually.deep.equal(DEFAULT_SESSION);
-
+      expect(removed).to.deep.equal(SESSION_1);
       sinon.assert.calledOnceWithExactly(secretsStub.delete, SESSIONS_KEY);
+    });
+
+    it('removes only the specified session from a multi-session list', async () => {
+      secretsStub.get.resolves(JSON.stringify([SESSION_1, SESSION_2]));
+
+      const removed = await authStorage.removeSession(SESSION_1.id);
+
+      expect(removed).to.deep.equal(SESSION_1);
+      sinon.assert.calledWith(
+        secretsStub.store,
+        SESSIONS_KEY,
+        JSON.stringify([SESSION_2]),
+      );
     });
   });
 });

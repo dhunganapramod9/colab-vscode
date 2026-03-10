@@ -6,52 +6,77 @@
 
 import vscode from 'vscode';
 import { z } from 'zod';
+import { log } from '../common/logging';
 import { PROVIDER_ID } from '../config/constants';
 
 const SESSIONS_KEY = `${PROVIDER_ID}.sessions`;
 
 /**
- * Server storage for authentication sessions.
+ * Persistent storage for refreshable authentication sessions.
  *
- * Implementation assumes full ownership over the backing secret storage file.
- *
- * Currently only supports a single session, since we only ever need the one
- * scope. Despite this, the implementation is designed to be extensible to
- * multiple sessions in the future (stores an array of sessions). We are likely
- * to do this if and when we support Drive-specific functionality.
+ * This class wraps VS Code's SecretStorage to securely store refresh tokens.
+ * It maintains an in-memory cache to minimize expensive asynchronous I/O
+ * and string parsing.
  */
 export class AuthStorage {
   constructor(private readonly secrets: vscode.SecretStorage) {}
 
   /**
-   * Retrieve the refreshable authentication session.
+   * Retrieves all persisted sessions.
    *
+   * @returns An array of refreshable authentication sessions.
+   * If no sessions are stored, returns an empty array.
+   */
+  async getSessions(): Promise<RefreshableAuthenticationSession[]> {
+    const sessionJson = await this.secrets.get(SESSIONS_KEY);
+    if (!sessionJson) {
+      return [];
+    }
+
+    try {
+      return parseAuthenticationSessions(sessionJson);
+    } catch (err: unknown) {
+      // e.g. if storage is corrupted
+      log.error(`Failed to parse stored authentication sessions:`, err);
+      throw err;
+    }
+  }
+
+  /**
+   * Retrieves a session that matches the requested scopes exactly.
+   *
+   * @param scopes - An array of scopes. The returned session will have these  
+   * exact scopes.  
+
    * @returns The refreshable authentication session, if it exists. Otherwise,
    * `undefined`.
    */
-  async getSession(): Promise<RefreshableAuthenticationSession | undefined> {
-    const sessionJson = await this.secrets.get(SESSIONS_KEY);
-    if (!sessionJson) {
-      return undefined;
-    }
-    const sessions = parseAuthenticationSessions(sessionJson);
-    if (sessions.length != 1) {
-      throw new Error(
-        `Unexpected number of sessions: ${sessions.length.toString()}`,
-      );
-    }
-    return sessions[0];
+  async getSession(
+    scopes: readonly string[],
+  ): Promise<RefreshableAuthenticationSession | undefined> {
+    const sessions = await this.getSessions();
+    return sessions.find(
+      (session) =>
+        scopes.length === session.scopes.length &&
+        scopes.every((scope) => session.scopes.includes(scope)),
+    );
   }
 
   /**
-   * Stores the refreshable authentication session.
+   * Stores a session, replacing the session with a matching ID
+   * if it has already been stored.
+   *
+   * @param session - The session to store.
+   * @returns A promise that resolves when the session has been stored.
    */
   async storeSession(session: RefreshableAuthenticationSession): Promise<void> {
-    return this.secrets.store(SESSIONS_KEY, JSON.stringify([session]));
+    const sessions = await this.getSessions();
+    const otherSessions = sessions.filter((s) => s.id !== session.id);
+    await this.save([...otherSessions, session]);
   }
 
   /**
-   * Removes a refreshable authentication session by ID.
+   * Removes a session by ID and updates persistent storage.
    *
    * @param sessionId - The session ID.
    * @returns The removed session, if it was found and removed. Otherwise,
@@ -60,15 +85,33 @@ export class AuthStorage {
   async removeSession(
     sessionId: string,
   ): Promise<RefreshableAuthenticationSession | undefined> {
-    const session = await this.getSession();
-    if (!session) {
-      return undefined;
+    const sessions = await this.getSessions();
+    let sessionToRemove: RefreshableAuthenticationSession | undefined;
+    const sessionsToKeep: RefreshableAuthenticationSession[] = [];
+    for (const s of sessions) {
+      if (s.id === sessionId) {
+        sessionToRemove = s;
+      } else {
+        sessionsToKeep.push(s);
+      }
     }
-    if (session.id !== sessionId) {
-      return undefined;
+    if (sessionToRemove) {
+      await this.save(sessionsToKeep);
     }
-    await this.secrets.delete(SESSIONS_KEY);
-    return session;
+    return sessionToRemove;
+  }
+
+  /**
+   * Internal helper to commit the provided list to the secret store.
+   */
+  private async save(
+    sessions: RefreshableAuthenticationSession[],
+  ): Promise<void> {
+    if (sessions.length > 0) {
+      await this.secrets.store(SESSIONS_KEY, JSON.stringify(sessions));
+    } else {
+      await this.secrets.delete(SESSIONS_KEY);
+    }
   }
 }
 
