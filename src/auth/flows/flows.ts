@@ -25,6 +25,21 @@ export interface OAuth2TriggerOptions {
   readonly scopes: string[];
   /** The PKCE challenge string which if specific should be included with the auth request. */
   readonly pkceChallenge?: string;
+  /** Whether to include granted scopes in the new request. */
+  readonly includeGrantedScopes?: boolean;
+  /** The login hint to pre-fill the email (for incremental authorization). */
+  readonly loginHint?: string;
+  /** Influences how the user is presented with the consent dialog.
+   *
+   * If the value is "consent" - the consent dialog is forced to be displayed
+   * every time, even if the user has previously granted access.
+   * If the value is not specified - the consent dialog defaults to its default
+   * e.g., it only shows for the scopes the user did not already consent to.
+   *
+   * This should always be "consent" unless `includeGrantedScopes` is `true`
+   * to allow for incremental auth.
+   * */
+  readonly prompt?: 'consent';
 }
 
 export interface FlowResult {
@@ -47,7 +62,6 @@ export interface OAuth2Flow {
 export const DEFAULT_AUTH_URL_OPTS: GenerateAuthUrlOpts = {
   access_type: 'offline',
   response_type: 'code',
-  prompt: 'consent',
   code_challenge_method: CodeChallengeMethod.S256,
 };
 

@@ -8,6 +8,7 @@ import { UUID } from 'crypto';
 import * as https from 'https';
 import fetch, { Headers, Request, RequestInit, Response } from 'node-fetch';
 import { z } from 'zod';
+import { REQUIRED_SCOPES } from '../auth/scopes';
 import { traceMethod } from '../common/logging/decorators';
 import { JupyterClient } from '../jupyter/client';
 import { Session } from '../jupyter/client/generated';
@@ -72,6 +73,7 @@ interface AssignParams {
 // Options for issueRequest method.
 interface IssueRequestOptions {
   requireAccessToken?: boolean;
+  scopes?: readonly string[];
 }
 
 /**
@@ -83,7 +85,7 @@ export class ColabClient {
   constructor(
     private readonly colabDomain: URL,
     private readonly colabGapiDomain: URL,
-    private getAccessToken: () => Promise<string>,
+    private getAccessToken: (scopes: readonly string[]) => Promise<string>,
     private readonly callerInfo: {
       appName: string;
       extensionVersion: string;
@@ -465,7 +467,10 @@ export class ColabClient {
     endpoint: URL,
     init: RequestInit,
     schema?: z.ZodType,
-    { requireAccessToken = true }: IssueRequestOptions = {},
+    {
+      requireAccessToken = true,
+      scopes = REQUIRED_SCOPES,
+    }: IssueRequestOptions = {},
   ): Promise<unknown> {
     // The Colab API requires the authuser parameter to be set.
     if (endpoint.hostname === this.colabDomain.hostname) {
@@ -490,7 +495,7 @@ export class ColabClient {
     // authentication error i.e. if the first attempt fails with a 401,
     for (let attempt = 0; attempt < 2; attempt++) {
       if (requireAccessToken) {
-        const token = await this.getAccessToken();
+        const token = await this.getAccessToken(scopes);
         requestHeaders.set(AUTHORIZATION_HEADER.key, `Bearer ${token}`);
       }
 
