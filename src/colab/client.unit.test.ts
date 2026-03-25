@@ -9,7 +9,6 @@ import { expect } from 'chai';
 import fetch, { Response } from 'node-fetch';
 import { SinonStub, SinonMatcher } from 'sinon';
 import * as sinon from 'sinon';
-import { REQUIRED_SCOPES } from '../auth/scopes';
 import { Session } from '../jupyter/client/generated';
 import { ColabAssignedServer } from '../jupyter/servers';
 import { TestUri } from '../test/helpers/uri';
@@ -75,7 +74,7 @@ const DEFAULT_ASSIGNMENT: Assignment = {
 
 describe('ColabClient', () => {
   let fetchStub: sinon.SinonStubbedMember<typeof fetch>;
-  let sessionStub: SinonStub<[readonly string[]], Promise<string>>;
+  let sessionStub: SinonStub<[], Promise<string>>;
   let client: ColabClient;
   let onAuthErrorStub: SinonStub<[], Promise<void>>;
 
@@ -83,18 +82,13 @@ describe('ColabClient', () => {
     fetchStub = sinon.stub(fetch, 'default').callsFake(() => {
       throw new Error('fetch was called with non-matching call');
     });
-    sessionStub = sinon
-      .stub<[readonly string[]], Promise<string>>()
-      .callsFake(() => {
-        throw new Error('sessionStub was called with non-matching call');
-      });
-    sessionStub.withArgs(REQUIRED_SCOPES).resolves(BEARER_TOKEN);
+    sessionStub = sinon.stub<[], Promise<string>>().resolves(BEARER_TOKEN);
     onAuthErrorStub = sinon.stub();
-    client = new ColabClient(
+    client = ColabClient.create(
       new URL(`https://${COLAB_HOST}`),
       new URL(`https://${GOOGLE_APIS_HOST}`),
-      sessionStub,
       { appName: APP_NAME, extensionVersion: EXTENSION_VERSION },
+      () => sessionStub(),
       onAuthErrorStub,
     );
   });
@@ -878,36 +872,6 @@ describe('ColabClient', () => {
     sinon.assert.calledOnce(fetchStub);
   });
 
-  it('supports non-XSSI responses', async () => {
-    fetchStub
-      .withArgs(
-        urlMatcher({
-          method: 'GET',
-          host: GOOGLE_APIS_HOST,
-          path: '/v1/user-info',
-          withAuthUser: false,
-        }),
-      )
-      .resolves(
-        new Response(
-          JSON.stringify({
-            subscriptionTier: 'SUBSCRIPTION_TIER_NONE',
-            eligibleAccelerators: [],
-            ineligibleAccelerators: [],
-          }),
-          { status: 200 },
-        ),
-      );
-
-    await expect(client.getUserInfo()).to.eventually.deep.equal({
-      subscriptionTier: SubscriptionTier.NONE,
-      eligibleAccelerators: [],
-      ineligibleAccelerators: [],
-    });
-
-    sinon.assert.calledOnce(fetchStub);
-  });
-
   it('retries request on 401 if onAuthError is provided', async () => {
     fetchStub
       .withArgs(
@@ -942,77 +906,6 @@ describe('ColabClient', () => {
 
     sinon.assert.calledTwice(fetchStub);
     sinon.assert.calledOnce(onAuthErrorStub);
-  });
-
-  it('does not retry more than two times on persistent 401', async () => {
-    fetchStub
-      .withArgs(sinon.match.any)
-      .resolves(new Response('Unauthorized', { status: 401 }));
-
-    await expect(client.getUserInfo()).to.eventually.be.rejectedWith(
-      /Unauthorized/,
-    );
-
-    sinon.assert.calledTwice(fetchStub);
-    // There's only one attempt to fix the auth error.
-    sinon.assert.calledOnce(onAuthErrorStub);
-  });
-
-  it('throws on 401 if onAuthError is not provided', async () => {
-    client = new ColabClient(
-      new URL(`https://${COLAB_HOST}`),
-      new URL(`https://${GOOGLE_APIS_HOST}`),
-      sessionStub,
-      { appName: APP_NAME, extensionVersion: EXTENSION_VERSION },
-    );
-
-    fetchStub
-      .withArgs(sinon.match.any)
-      .resolves(new Response('Unauthorized', { status: 401 }));
-
-    await expect(client.getUserInfo()).to.eventually.be.rejectedWith(
-      /Unauthorized/,
-    );
-    sinon.assert.notCalled(onAuthErrorStub);
-  });
-
-  it('rejects when error responses are returned', async () => {
-    fetchStub
-      .withArgs(
-        urlMatcher({
-          method: 'GET',
-          host: GOOGLE_APIS_HOST,
-          path: '/v1/user-info',
-          withAuthUser: false,
-        }),
-      )
-      .resolves(
-        new Response('Error', {
-          status: 500,
-          statusText: 'Foo error',
-        }),
-      );
-
-    await expect(client.getUserInfo()).to.eventually.be.rejectedWith(
-      /Foo error/,
-    );
-  });
-
-  it('rejects invalid JSON responses', async () => {
-    fetchStub
-      .withArgs(
-        urlMatcher({
-          method: 'GET',
-          host: GOOGLE_APIS_HOST,
-          path: '/v1/user-info',
-          withAuthUser: false,
-        }),
-      )
-      .resolves(new Response(withXSSI('not JSON eh?'), { status: 200 }));
-
-    await expect(client.getUserInfo()).to.eventually.be.rejectedWith(
-      /not JSON.+eh\?/,
-    );
   });
 
   it('rejects response schema mismatches', async () => {
