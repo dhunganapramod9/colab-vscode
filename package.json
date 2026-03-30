@@ -100,6 +100,14 @@
           "tags": [
             "experimental"
           ]
+        },
+        "colab.importNotebookFromUrl": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enables the ability to import a notebook file from a URL.",
+          "tags": [
+            "experimental"
+          ]
         }
       }
     },
@@ -182,6 +190,12 @@
         "enablement": "colab.hasAssignedServer",
         "title": "Open Terminal",
         "icon": "$(terminal)"
+      },
+      {
+        "category": "Colab",
+        "command": "colab.importNotebookFromUrl",
+        "title": "Import notebook file from URL",
+        "icon": "$(arrow-down)"
       }
     ],
     "icons": {
@@ -283,6 +297,10 @@
         {
           "command": "colab.openTerminal",
           "when": "config.colab.terminal"
+        },
+        {
+          "command": "colab.importNotebookFromUrl",
+          "when": "config.colab.importNotebookFromUrl"
         }
       ],
       "explorer/context": [

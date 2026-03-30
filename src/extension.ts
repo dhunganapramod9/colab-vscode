@@ -10,7 +10,7 @@ import vscode, { Disposable } from 'vscode';
 import { GoogleAuthProvider } from './auth/auth-provider';
 import { getOAuth2Flows } from './auth/flows/flows';
 import { login, LoginOptions } from './auth/login';
-import { REQUIRED_SCOPES } from './auth/scopes';
+import { DRIVE_SCOPES, REQUIRED_SCOPES } from './auth/scopes';
 import { AuthStorage } from './auth/storage';
 import { ColabClient } from './colab/client';
 import {
@@ -46,6 +46,9 @@ import { CONFIG } from './colab-config';
 import { initializeLogger, log } from './common/logging';
 import { Toggleable } from './common/toggleable';
 import { getPackageInfo } from './config/package-info';
+import { DriveClient } from './drive/client';
+import { IMPORT_NOTEBOOK_FROM_URL } from './drive/commands/constants';
+import { importNotebookFromUrl } from './drive/commands/import';
 import { AssignmentManager } from './jupyter/assignments';
 import { ContentsFileSystemProvider } from './jupyter/contents/file-system';
 import { JupyterConnectionManager } from './jupyter/contents/sessions';
@@ -94,6 +97,13 @@ async function activateInternal(context: vscode.ExtensionContext) {
     { appName: vscode.env.appName, extensionVersion: packageInfo.version },
     () =>
       GoogleAuthProvider.getOrCreateSession(vscode, REQUIRED_SCOPES).then(
+        (session) => session.accessToken,
+      ),
+    () => authProvider.signOut(),
+  );
+  const driveClient = DriveClient.create(
+    () =>
+      GoogleAuthProvider.getOrCreateSession(vscode, DRIVE_SCOPES).then(
         (session) => session.accessToken,
       ),
     () => authProvider.signOut(),
@@ -184,6 +194,7 @@ async function activateInternal(context: vscode.ExtensionContext) {
       serverContentTreeView,
       serverResourceTreeView,
       fs,
+      driveClient,
     ),
   );
   telemetry.logActivation();
@@ -226,6 +237,7 @@ function registerCommands(
   contentTreeProvider: ContentTreeProvider,
   resourceTreeProvider: ResourceTreeProvider,
   fs: ContentsFileSystemProvider,
+  driveClient: DriveClient,
 ): Disposable[] {
   return [
     registerCommand(SIGN_OUT.id, async () => {
@@ -293,6 +305,9 @@ function registerCommands(
     }),
     registerCommand(OPEN_TERMINAL.id, async (withBackButton?: boolean) => {
       await openTerminal(vscode, assignmentManager, withBackButton);
+    }),
+    registerCommand(IMPORT_NOTEBOOK_FROM_URL.id, async (url?: string) => {
+      await importNotebookFromUrl(vscode, driveClient, url);
     }),
   ];
 }
