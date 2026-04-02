@@ -489,6 +489,19 @@ export class AssignmentManager implements Disposable {
   ): Promise<void> {
     this.guardDisposed();
     if (isColabAssignedServer(server)) {
+      const stored = await this.storage.get(server.id);
+      if (!stored) {
+        return;
+      }
+      const client = ProxiedJupyterClient.withStaticConnection(server);
+      await Promise.all(
+        (await client.sessions.list({ signal })).map((session) =>
+          session.id
+            ? client.sessions.delete({ session: session.id }, { signal })
+            : Promise.resolve(),
+        ),
+      );
+      await this.client.unassign(server.endpoint, signal);
       const removed = await this.storage.remove(server.id);
       if (!removed) {
         return;
@@ -498,14 +511,7 @@ export class AssignmentManager implements Disposable {
         removed: [{ server, userInitiated: true }],
         changed: [],
       });
-      const client = ProxiedJupyterClient.withStaticConnection(server);
-      await Promise.all(
-        (await client.sessions.list({ signal })).map((session) =>
-          session.id
-            ? client.sessions.delete({ session: session.id }, { signal })
-            : Promise.resolve(),
-        ),
-      );
+      return;
     }
     await this.client.unassign(server.endpoint, signal);
   }
